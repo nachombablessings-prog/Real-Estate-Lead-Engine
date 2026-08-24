@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import requests
 import re
-import io
 import urllib.parse
 from bs4 import BeautifulSoup
 
@@ -16,7 +15,7 @@ st.set_page_config(
 )
 
 st.title("🏢 Autonomous Real-Estate Lead Engine")
-st.caption("Engine 1: RapidAPI MLS Ingestion | Engine 2: Web Scraper Fallback | Enterprise Verification Matrix")
+st.caption("Engine 1: RapidAPI MLS Ingestion | Engine 2: Yahoo Search Fallback | Enterprise Verification Matrix")
 
 # ==========================================
 # SECRETS MANAGEMENT (BACKEND ONLY)
@@ -95,106 +94,83 @@ def fetch_rapidapi_leads(city, state, api_key, limit=25):
         return None, str(e)
 
 # ==========================================
-# ENGINE 2: WEB SCRAPER FALLBACK
+# ENGINE 2: YAHOO SEARCH SCRAPER FALLBACK
 # ==========================================
 def scrape_web_leads_fallback(city, state, max_results=25):
     leads = []
     diagnostic_logs = []
     
-    # Method A: Redfin Public GIS Search Endpoint
     try:
-        url = "https://www.redfin.com/stingray/api/gis-csv"
-        params = {
-            "al": "1",
-            "market": city.lower().replace(" ", ""),
-            "num_homes": str(max_results * 2),
-            "status": "9",
-            "v": "8"
-        }
+        # Construct strict query targeting Realtor.com listings
+        query = urllib.parse.quote(f'site:realtor.com/realestateandhomes-detail "{city}" "{state}" "For Sale"')
+        y_url = f"https://search.yahoo.com/search?p={query}&n={max_results}"
+        
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "text/csv,application/json,text/plain,*/*",
-            "Accept-Language": "en-US,en;q=0.9"
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         }
-        resp = requests.get(url, params=params, headers=headers, timeout=10)
         
-        if resp.status_code == 200 and len(resp.text) > 100 and "ADDRESS" in resp.text.upper():
-            df_csv = pd.read_csv(io.StringIO(resp.text))
-            for _, row in df_csv.iterrows():
-                addr = str(row.get('ADDRESS', '')).strip()
-                c = str(row.get('CITY', city)).strip()
-                s = str(row.get('STATE OR PROVINCE', state)).strip()
-                zip_c = str(row.get('ZIP OR POSTAL CODE', '')).replace('.0', '').strip()
-                price = row.get('PRICE', 0)
-                p_type = str(row.get('PROPERTY TYPE', 'Single Family')).strip()
-                status = str(row.get('STATUS', 'Active')).strip()
-                redfin_path = str(row.get('URL (SEE http://www.redfin.com/redfin_firm FOR BEHAVIOR)', '')).strip()
-                
-                if addr and addr.lower() != 'nan':
-                    leads.append({
-                        'Address': addr,
-                        'City': c,
-                        'State': s,
-                        'Zip': zip_c,
-                        'Price': price,
-                        'Property Type': p_type,
-                        'Status': status,
-                        'Brokerage / Agent': 'Redfin Listed Agent',
-                        'Listing URL': f"https://www.redfin.com{redfin_path}" if redfin_path.startswith('/') else redfin_path,
-                        'isPending': False,
-                        'isContingent': False,
-                        'Source': 'Web Scraper Engine 2'
-                    })
-        else:
-            diagnostic_logs.append(f"Redfin GIS Status: {resp.status_code} | Body: {resp.text[:150]}")
-    except Exception as e:
-        diagnostic_logs.append(f"Redfin GIS Error: {str(e)}")
-
-    # Method B: Search Index Scraping
-    if len(leads) < 5:
-        try:
-            ddg_url = f"https://html.duckduckgo.com/html/?q=site:realtor.com/realestateandhomes-detail+\"{city}\"+\"{state}\"+\"For Sale\""
-            headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
-            r = requests.get(ddg_url, headers=headers, timeout=10)
+        resp = requests.get(y_url, headers=headers, timeout=12)
+        
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, 'html.parser')
             
-            if r.status_code == 200:
-                soup = BeautifulSoup(r.text, 'html.parser')
-                results = soup.find_all('a', class_='result__url')
-                snippets = soup.find_all('a', class_='result__snippet')
+            # Find all search result blocks
+            for wrap in soup.find_all('div', class_=re.compile(r'algo|dd algo')):
+                a_tag = wrap.find('a', href=True)
+                if not a_tag: continue
                 
-                for idx, res in enumerate(results):
-                    href = res.get('href', '')
-                    snippet_text = snippets[idx].text if idx < len(snippets) else ''
+                href = a_tag['href']
+                text_content = wrap.text
+                
+                # Check if it's a real estate link
+                if 'realtor.com/realestateandhomes-detail' in href or 'RU=http' in href:
+                    # Clean the URL from Yahoo's redirect wrapper
+                    clean_url = href
+                    if 'RU=' in href:
+                        match = re.search(r'RU=([^/&]+)', href)
+                        if match:
+                            clean_url = urllib.parse.unquote(match.group(1))
+                            
+                    if 'realtor.com/realestateandhomes-detail' not in clean_url:
+                        continue
+                        
+                    # Extract Price via Regex from snippet
+                    price_match = re.search(r'\$([0-9,]+)', text_content)
+                    price = int(price_match.group(1).replace(',', '')) if price_match else 0
                     
-                    match_price = re.search(r'\$([0-9,]+)', snippet_text)
-                    price = int(match_price.group(1).replace(',', '')) if match_price else 0
-                    
-                    url_match = re.search(r'/realestateandhomes-detail/([^/?]+)', href)
+                    # Extract Address from URL Slug
+                    url_match = re.search(r'/realestateandhomes-detail/([^/?]+)', clean_url)
+                    street_address = ""
                     if url_match:
                         raw_slug = url_match.group(1).replace('-', ' ')
                         parts = raw_slug.split('_')
-                        street = parts[0] if len(parts) > 0 else raw_slug
-                        if re.match(r'^\d+\s+', street):
-                            leads.append({
-                                'Address': street.title(),
-                                'City': city.title(),
-                                'State': state.upper(),
-                                'Zip': parts[2] if len(parts) > 2 else '',
-                                'Price': price,
-                                'Property Type': 'Single Family Home',
-                                'Status': 'Active',
-                                'Brokerage / Agent': 'MLS Active',
-                                'Listing URL': f"https:{href}" if href.startswith('//') else href,
-                                'isPending': False,
-                                'isContingent': False,
-                                'Source': 'Web Scraper Engine 2'
-                            })
-            else:
-                 diagnostic_logs.append(f"DDG Scraper Status: {r.status_code} | Body: {r.text[:150]}")
-        except Exception as e:
-            diagnostic_logs.append(f"DDG Scraper Error: {str(e)}")
+                        street_address = parts[0].title()
+                        
+                    # Only append if valid address and valid price
+                    if price > 10000 and re.match(r'^\d+\s+', street_address):
+                        leads.append({
+                            'Address': street_address.replace('%20', ' '),
+                            'City': city.title(),
+                            'State': state.upper(),
+                            'Zip': "Lookup via Contact",
+                            'Price': price,
+                            'Property Type': 'Single Family Home',
+                            'Status': 'Active',
+                            'Brokerage / Agent': 'Web Scraped Lead',
+                            'Listing URL': clean_url,
+                            'isPending': False,
+                            'isContingent': False,
+                            'Source': 'Engine 2 (Yahoo)'
+                        })
+        else:
+            diagnostic_logs.append(f"Yahoo Scraper Status: {resp.status_code} | Body: {resp.text[:150]}")
+    except Exception as e:
+        diagnostic_logs.append(f"Yahoo Scraper Error: {str(e)}")
 
-    return leads[:max_results], diagnostic_logs
+    # Remove duplicates based on Listing URL
+    unique_leads = {lead['Listing URL']: lead for lead in leads}.values()
+    return list(unique_leads)[:max_results], diagnostic_logs
 
 # ==========================================
 # ENTERPRISE LEAD VERIFICATION ENGINE
@@ -228,18 +204,14 @@ def verify_and_clean_leads(raw_leads):
         except ValueError:
             price_val = 0
 
-        if not re.match(r'^\d+\s+[A-Za-z0-9]', addr_str):
-            continue
-        if any(keyword in status_str for keyword in OFF_MARKET_KEYWORDS):
-            continue
-        if any(p_type in prop_type_str for p_type in INVALID_PROPERTY_TYPES):
-            continue
-        if price_val < 10000:
-            continue
-        if row.get('isPending') is True or row.get('isContingent') is True:
-            continue
+        # Strict Rules
+        if not re.match(r'^\d+\s+[A-Za-z0-9]', addr_str): continue
+        if any(keyword in status_str for keyword in OFF_MARKET_KEYWORDS): continue
+        if any(p_type in prop_type_str for p_type in INVALID_PROPERTY_TYPES): continue
+        if price_val < 10000: continue
+        if row.get('isPending') is True or row.get('isContingent') is True: continue
 
-        query_str = f"{addr_str} {row['City']} {row['State']} {row['Zip']}".strip()
+        query_str = f"{addr_str} {row['City']} {row['State']}".strip()
         lookup_encoded = urllib.parse.quote(query_str)
         
         valid_entry = {
@@ -278,14 +250,14 @@ if execute_search:
         if error == "QUOTA_EXCEEDED" or (raw_leads is not None and len(raw_leads) == 0):
             st.warning("⚠️ RapidAPI quota exhausted. Failing over to Web Scraper Engine 2...")
             leads, diagnostics = scrape_web_leads_fallback(city_input, state_input, max_leads)
-            engine_used = "Web Scraper Engine 2"
+            engine_used = "Web Scraper Engine 2 (Yahoo)"
         elif raw_leads:
             leads = raw_leads
             engine_used = "RapidAPI Real Estate Engine 1"
         else:
-            st.error(f"⚠️ Primary API Error: {error}. Failing over to Web Scraper Engine 2...")
+            st.error(f"⚠️ Primary API Error: {error}. Failing over to Engine 2...")
             leads, diagnostics = scrape_web_leads_fallback(city_input, state_input, max_leads)
-            engine_used = "Web Scraper Engine 2"
+            engine_used = "Web Scraper Engine 2 (Yahoo)"
 
         # Verification Pipeline
         verified_df, filtered_off_market = verify_and_clean_leads(leads)
@@ -299,9 +271,9 @@ if execute_search:
     col4.metric("Active Engine", engine_used)
 
     # Display Engine 2 Diagnostics if it failed
-    if engine_used == "Web Scraper Engine 2" and len(leads) == 0:
+    if "Engine 2" in engine_used and len(leads) == 0:
         with st.expander("🛠️ Scraper Diagnostic Logs (Why it returned 0)"):
-            st.error("Engine 2 was blocked by the target servers. See logs below:")
+            st.error("Engine 2 experienced an issue. See logs below:")
             for log in diagnostics:
                 st.code(log)
 
@@ -327,5 +299,4 @@ if execute_search:
             mime="text/csv"
         )
     else:
-        if engine_used == "RapidAPI Real Estate Engine 1":
-            st.error("No active, verified leads were found matching the criteria in Engine 1.")
+        st.error("No active, verified leads were found. Check the diagnostic logs above if Engine 2 fired blanks.")
