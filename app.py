@@ -10,33 +10,39 @@ from bs4 import BeautifulSoup
 # PAGE CONFIGURATION
 # ==========================================
 st.set_page_config(
-    page_title="Real Estate Lead Scraper & Verifier Pro",
-    page_icon="🏠",
+    page_title="Autonomous B2B Lead Engine",
+    page_icon="🏢",
     layout="wide"
 )
 
-st.title("🏠 Real Estate Lead Scraper & Automated Verifier")
-st.caption("Engine 1: RapidAPI Lead Ingestion | Engine 2: Redfin & DDG Web Scraper Fallback | Enterprise Verification Matrix")
+st.title("🏢 Autonomous Real-Estate Lead Engine")
+st.caption("Engine 1: RapidAPI MLS Ingestion | Engine 2: Web Scraper Fallback | Enterprise Verification Matrix")
+
+# ==========================================
+# SECRETS MANAGEMENT (BACKEND ONLY)
+# ==========================================
+try:
+    RAPIDAPI_KEY = st.secrets["RAPIDAPI_KEY"]
+except KeyError:
+    st.error("⚠️ Critical Error: RAPIDAPI_KEY is missing in Streamlit secrets.")
+    st.stop()
 
 # ==========================================
 # SIDEBAR CONTROLS
 # ==========================================
-st.sidebar.header("🔑 API & System Settings")
-default_key = st.secrets.get("RAPIDAPI_KEY", "") if "RAPIDAPI_KEY" in st.secrets else ""
-rapidapi_key = st.sidebar.text_input("RapidAPI Key", value=default_key, type="password", help="Enter your RapidAPI Key for Real Estate API")
-
-st.sidebar.header("📍 Target Search Parameters")
-city_input = st.sidebar.text_input("City", value="Miami")
-state_input = st.sidebar.text_input("State (2-Letter)", value="FL", max_chars=2)
-max_leads = st.sidebar.slider("Maximum Leads to Fetch", min_value=10, max_value=100, value=25)
+with st.sidebar:
+    st.header("📍 Target Search Parameters")
+    city_input = st.text_input("Target City", value="Miami")
+    state_input = st.text_input("Target State (2-Letter)", value="FL", max_chars=2)
+    max_leads = st.slider("Maximum Leads to Fetch", min_value=10, max_value=100, value=25)
+    
+    st.markdown("---")
+    execute_search = st.button("🚀 Fetch & Verify Leads", use_container_width=True)
 
 # ==========================================
 # ENGINE 1: RAPIDAPI INGESTION
 # ==========================================
 def fetch_rapidapi_leads(city, state, api_key, limit=25):
-    if not api_key:
-        return None, "API_KEY_MISSING"
-        
     url = "https://us-real-estate-listings.p.rapidapi.com/v2/for-sale"
     querystring = {
         "city": city,
@@ -52,7 +58,7 @@ def fetch_rapidapi_leads(city, state, api_key, limit=25):
     
     try:
         response = requests.get(url, headers=headers, params=querystring, timeout=12)
-        if response.status_code == 429:
+        if response.status_code == 429 or response.status_code == 403:
             return None, "QUOTA_EXCEEDED"
         elif response.status_code != 200:
             return None, f"API_ERROR_{response.status_code}"
@@ -82,7 +88,7 @@ def fetch_rapidapi_leads(city, state, api_key, limit=25):
                 'Listing URL': listing_url,
                 'isPending': item.get('flags', {}).get('is_pending', False),
                 'isContingent': item.get('flags', {}).get('is_contingent', False),
-                'Source': 'RapidAPI Engine'
+                'Source': 'RapidAPI Engine 1'
             })
         return leads, None
     except Exception as e:
@@ -93,6 +99,7 @@ def fetch_rapidapi_leads(city, state, api_key, limit=25):
 # ==========================================
 def scrape_web_leads_fallback(city, state, max_results=25):
     leads = []
+    diagnostic_logs = []
     
     # Method A: Redfin Public GIS Search Endpoint
     try:
@@ -106,7 +113,8 @@ def scrape_web_leads_fallback(city, state, max_results=25):
         }
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "text/csv,application/json,text/plain,*/*"
+            "Accept": "text/csv,application/json,text/plain,*/*",
+            "Accept-Language": "en-US,en;q=0.9"
         }
         resp = requests.get(url, params=params, headers=headers, timeout=10)
         
@@ -122,8 +130,6 @@ def scrape_web_leads_fallback(city, state, max_results=25):
                 status = str(row.get('STATUS', 'Active')).strip()
                 redfin_path = str(row.get('URL (SEE http://www.redfin.com/redfin_firm FOR BEHAVIOR)', '')).strip()
                 
-                listing_url = f"https://www.redfin.com{redfin_path}" if redfin_path.startswith('/') else redfin_path
-                
                 if addr and addr.lower() != 'nan':
                     leads.append({
                         'Address': addr,
@@ -134,13 +140,15 @@ def scrape_web_leads_fallback(city, state, max_results=25):
                         'Property Type': p_type,
                         'Status': status,
                         'Brokerage / Agent': 'Redfin Listed Agent',
-                        'Listing URL': listing_url or f"https://www.google.com/search?q={urllib.parse.quote(f'{addr} {c} {s}')}",
+                        'Listing URL': f"https://www.redfin.com{redfin_path}" if redfin_path.startswith('/') else redfin_path,
                         'isPending': False,
                         'isContingent': False,
-                        'Source': 'Web Scraper Engine'
+                        'Source': 'Web Scraper Engine 2'
                     })
-    except Exception:
-        pass
+        else:
+            diagnostic_logs.append(f"Redfin GIS Status: {resp.status_code} | Body: {resp.text[:150]}")
+    except Exception as e:
+        diagnostic_logs.append(f"Redfin GIS Error: {str(e)}")
 
     # Method B: Search Index Scraping
     if len(leads) < 5:
@@ -148,6 +156,7 @@ def scrape_web_leads_fallback(city, state, max_results=25):
             ddg_url = f"https://html.duckduckgo.com/html/?q=site:realtor.com/realestateandhomes-detail+\"{city}\"+\"{state}\"+\"For Sale\""
             headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
             r = requests.get(ddg_url, headers=headers, timeout=10)
+            
             if r.status_code == 200:
                 soup = BeautifulSoup(r.text, 'html.parser')
                 results = soup.find_all('a', class_='result__url')
@@ -178,12 +187,14 @@ def scrape_web_leads_fallback(city, state, max_results=25):
                                 'Listing URL': f"https:{href}" if href.startswith('//') else href,
                                 'isPending': False,
                                 'isContingent': False,
-                                'Source': 'Web Scraper Engine'
+                                'Source': 'Web Scraper Engine 2'
                             })
-        except Exception:
-            pass
+            else:
+                 diagnostic_logs.append(f"DDG Scraper Status: {r.status_code} | Body: {r.text[:150]}")
+        except Exception as e:
+            diagnostic_logs.append(f"DDG Scraper Error: {str(e)}")
 
-    return leads[:max_results]
+    return leads[:max_results], diagnostic_logs
 
 # ==========================================
 # ENTERPRISE LEAD VERIFICATION ENGINE
@@ -211,20 +222,20 @@ def verify_and_clean_leads(raw_leads):
         status_str = str(row.get('Status', '')).upper()
         prop_type_str = str(row.get('Property Type', '')).upper()
         addr_str = str(row.get('Address', '')).strip()
-        price_val = float(row.get('Price', 0)) if pd.notnull(row.get('Price')) else 0
+        
+        try:
+            price_val = float(row.get('Price', 0)) if pd.notnull(row.get('Price')) else 0
+        except ValueError:
+            price_val = 0
 
         if not re.match(r'^\d+\s+[A-Za-z0-9]', addr_str):
             continue
-
         if any(keyword in status_str for keyword in OFF_MARKET_KEYWORDS):
             continue
-
         if any(p_type in prop_type_str for p_type in INVALID_PROPERTY_TYPES):
             continue
-
         if price_val < 10000:
             continue
-
         if row.get('isPending') is True or row.get('isContingent') is True:
             continue
 
@@ -252,39 +263,51 @@ def verify_and_clean_leads(raw_leads):
     return verified_df, off_market_count
 
 # ==========================================
-# MAIN APPLICATION INTERFACE
+# MAIN APPLICATION EXECUTION
 # ==========================================
-if st.button("🚀 Fetch & Verify Leads", type="primary"):
+if execute_search:
     with st.spinner("Executing Lead Extraction & Verification Pipeline..."):
         leads = []
         engine_used = ""
+        diagnostics = []
         
-        raw_leads, error = fetch_rapidapi_leads(city_input, state_input, rapidapi_key, max_leads)
+        # Primary API Call
+        raw_leads, error = fetch_rapidapi_leads(city_input, state_input, RAPIDAPI_KEY, max_leads)
         
-        if error == "QUOTA_EXCEEDED" or error == "API_KEY_MISSING" or (raw_leads is not None and len(raw_leads) == 0):
-            st.warning("⚠️ RapidAPI quota exceeded or key missing. Failing over to Web Scraper Engine 2...")
-            leads = scrape_web_leads_fallback(city_input, state_input, max_leads)
-            engine_used = "Web Scraper Engine 2 (Redfin/DDG Indexer)"
+        # Engine Failover Logic
+        if error == "QUOTA_EXCEEDED" or (raw_leads is not None and len(raw_leads) == 0):
+            st.warning("⚠️ RapidAPI quota exhausted. Failing over to Web Scraper Engine 2...")
+            leads, diagnostics = scrape_web_leads_fallback(city_input, state_input, max_leads)
+            engine_used = "Web Scraper Engine 2"
         elif raw_leads:
             leads = raw_leads
             engine_used = "RapidAPI Real Estate Engine 1"
         else:
-            st.error(f"Error fetching from primary API: {error}. Switching to web scraper...")
-            leads = scrape_web_leads_fallback(city_input, state_input, max_leads)
-            engine_used = "Web Scraper Engine 2 (Redfin/DDG Indexer)"
+            st.error(f"⚠️ Primary API Error: {error}. Failing over to Web Scraper Engine 2...")
+            leads, diagnostics = scrape_web_leads_fallback(city_input, state_input, max_leads)
+            engine_used = "Web Scraper Engine 2"
 
+        # Verification Pipeline
         verified_df, filtered_off_market = verify_and_clean_leads(leads)
 
-    st.subheader("📊 Lead Generation Summary")
+    # Output Metrics
+    st.subheader("📊 Pipeline Diagnostics")
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total Extracted", len(leads))
     col2.metric("Verified Active", len(verified_df))
     col3.metric("Filtered Off-Market", filtered_off_market)
     col4.metric("Active Engine", engine_used)
 
+    # Display Engine 2 Diagnostics if it failed
+    if engine_used == "Web Scraper Engine 2" and len(leads) == 0:
+        with st.expander("🛠️ Scraper Diagnostic Logs (Why it returned 0)"):
+            st.error("Engine 2 was blocked by the target servers. See logs below:")
+            for log in diagnostics:
+                st.code(log)
+
+    # Render Data Table
     if not verified_df.empty:
         st.subheader("📋 Verified Active Leads")
-        
         st.dataframe(
             verified_df,
             column_config={
@@ -295,6 +318,7 @@ if st.button("🚀 Fetch & Verify Leads", type="primary"):
             hide_index=True
         )
         
+        # CSV Export
         csv_data = verified_df.to_csv(index=False).encode('utf-8')
         st.download_button(
             label="📥 Download Verified Leads (CSV)",
@@ -303,4 +327,5 @@ if st.button("🚀 Fetch & Verify Leads", type="primary"):
             mime="text/csv"
         )
     else:
-        st.error("No active, verified leads were found matching the criteria. Try expanding search parameters or checking city spelling.")
+        if engine_used == "RapidAPI Real Estate Engine 1":
+            st.error("No active, verified leads were found matching the criteria in Engine 1.")
