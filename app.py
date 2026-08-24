@@ -96,58 +96,64 @@ def fetch_rapidapi_leads(city, state, api_key, limit=25):
 # ==========================================
 # ENGINE 2: YAHOO SEARCH SCRAPER FALLBACK
 # ==========================================
+# ==========================================
+# ENGINE 2: DDG LITE SCRAPER FALLBACK
+# ==========================================
 def scrape_web_leads_fallback(city, state, max_results=25):
     leads = []
     diagnostic_logs = []
     
     try:
-        # Construct strict query targeting Realtor.com listings
-        query = urllib.parse.quote(f'site:realtor.com/realestateandhomes-detail "{city}" "{state}" "For Sale"')
-        y_url = f"https://search.yahoo.com/search?p={query}&n={max_results}"
+        # Using DDG Lite (HTML-only). It bypasses standard JS/Cloudflare datacenter blocks.
+        url = "https://lite.duckduckgo.com/lite/"
+        query = f'site:realtor.com/realestateandhomes-detail "{city}" "{state}" "For Sale"'
         
+        # POST payload mimicking a legacy browser form submission
+        payload = {'q': query, 'kl': 'us-en'}
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Content-Type": "application/x-www-form-urlencoded"
         }
         
-        resp = requests.get(y_url, headers=headers, timeout=12)
+        resp = requests.post(url, data=payload, headers=headers, timeout=15)
         
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
             
-            # Find all search result blocks
-            for wrap in soup.find_all('div', class_=re.compile(r'algo|dd algo')):
-                a_tag = wrap.find('a', href=True)
-                if not a_tag: continue
+            # Iterate through the legacy table rows
+            for tr in soup.find_all('tr'):
+                td_snippet = tr.find('td', class_='result-snippet')
+                if not td_snippet: 
+                    continue
+                    
+                snippet_text = td_snippet.text.strip()
                 
-                href = a_tag['href']
-                text_content = wrap.text
+                # The URL is usually in the preceding row in DDG Lite structure
+                prev_tr = tr.find_previous_sibling('tr')
+                if not prev_tr:
+                    continue
+                    
+                a_tag = prev_tr.find('a', class_='result-url')
+                if not a_tag:
+                    continue
+                    
+                href = a_tag.get('href', '')
                 
-                # Check if it's a real estate link
-                if 'realtor.com/realestateandhomes-detail' in href or 'RU=http' in href:
-                    # Clean the URL from Yahoo's redirect wrapper
-                    clean_url = href
-                    if 'RU=' in href:
-                        match = re.search(r'RU=([^/&]+)', href)
-                        if match:
-                            clean_url = urllib.parse.unquote(match.group(1))
-                            
-                    if 'realtor.com/realestateandhomes-detail' not in clean_url:
-                        continue
-                        
-                    # Extract Price via Regex from snippet
-                    price_match = re.search(r'\$([0-9,]+)', text_content)
+                if 'realtor.com/realestateandhomes-detail' in href:
+                    # Extract Price via Regex
+                    price_match = re.search(r'\$([0-9,]+)', snippet_text)
                     price = int(price_match.group(1).replace(',', '')) if price_match else 0
                     
                     # Extract Address from URL Slug
-                    url_match = re.search(r'/realestateandhomes-detail/([^/?]+)', clean_url)
+                    url_match = re.search(r'/realestateandhomes-detail/([^/?]+)', href)
                     street_address = ""
                     if url_match:
                         raw_slug = url_match.group(1).replace('-', ' ')
                         parts = raw_slug.split('_')
                         street_address = parts[0].title()
                         
-                    # Only append if valid address and valid price
+                    # Validate and Append
                     if price > 10000 and re.match(r'^\d+\s+', street_address):
                         leads.append({
                             'Address': street_address.replace('%20', ' '),
@@ -158,20 +164,19 @@ def scrape_web_leads_fallback(city, state, max_results=25):
                             'Property Type': 'Single Family Home',
                             'Status': 'Active',
                             'Brokerage / Agent': 'Web Scraped Lead',
-                            'Listing URL': clean_url,
+                            'Listing URL': href,
                             'isPending': False,
                             'isContingent': False,
-                            'Source': 'Engine 2 (Yahoo)'
+                            'Source': 'Engine 2 (DDG Lite)'
                         })
         else:
-            diagnostic_logs.append(f"Yahoo Scraper Status: {resp.status_code} | Body: {resp.text[:150]}")
+            diagnostic_logs.append(f"DDG Lite Status: {resp.status_code} | Body: {resp.text[:150]}")
     except Exception as e:
-        diagnostic_logs.append(f"Yahoo Scraper Error: {str(e)}")
+        diagnostic_logs.append(f"DDG Lite Error: {str(e)}")
 
-    # Remove duplicates based on Listing URL
+    # Remove duplicates
     unique_leads = {lead['Listing URL']: lead for lead in leads}.values()
     return list(unique_leads)[:max_results], diagnostic_logs
-
 # ==========================================
 # ENTERPRISE LEAD VERIFICATION ENGINE
 # ==========================================
