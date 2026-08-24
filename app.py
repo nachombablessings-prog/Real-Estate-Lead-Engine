@@ -64,6 +64,7 @@ def generate_contact_enrichment(address, city, state):
     return f"https://www.google.com/search?q={query}"
 
 # --- API INGESTION ENGINE ---
+# --- API INGESTION ENGINE WITH DIAGNOSTICS ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_rapidapi_data_paginated(city, state, min_price, total_pages=3):
     location = f"{city}, {state}"
@@ -75,7 +76,11 @@ def fetch_rapidapi_data_paginated(city, state, min_price, total_pages=3):
         querystring = {"location": location, "sort": "NEWEST", "page": str(page)}
         try:
             response = requests.get(url, headers=headers, params=querystring, timeout=12)
-            if response.status_code != 200: break
+            
+            # Print explicit HTTP error codes to the UI
+            if response.status_code != 200:
+                st.error(f"⚠️ API Error Status {response.status_code}: {response.text[:150]}")
+                break
                 
             data = response.json()
             data_payload = data.get("data", [])
@@ -106,11 +111,11 @@ def fetch_rapidapi_data_paginated(city, state, min_price, total_pages=3):
                         "Listing URL": item.get("url", f"https://www.google.com/search?q={quote_plus(address)}"),
                         "Contact Lookup URL": generate_contact_enrichment(address, city, state)
                     })
-        except Exception:
+        except Exception as e:
+            st.error(f"⚠️ Request Exception: {e}")
             break
             
     return pd.DataFrame(all_leads)
-
 # --- SIDEBAR CONTROLS ---
 with st.sidebar:
     st.header("⚙️ Target Parameters")
