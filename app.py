@@ -16,7 +16,7 @@ def fetch_open_web_ninja_leads(city, state):
         return None, "Missing OPEN_NINJA_KEY in Streamlit app secrets."
 
     # Correct OpenWebNinja endpoint structure
-    curl = "https://api.openwebninja.com/usage?api_id=<api_id>"# Adjust path if your specific dashboard slug differs
+    url = "https://api.openwebninja.com/usage?api_id=<api_id>"# Adjust path if your specific dashboard slug differs
     headers = {"x-api-key": api_key}
     params = {"city": city, "state": state}
 
