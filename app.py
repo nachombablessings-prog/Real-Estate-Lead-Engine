@@ -7,16 +7,33 @@ from storage import load_fixture, save_raw_response
 # 1. Initialize the SQLite database immediately on boot
 initialize_database()
 
-# 2. OpenWebNinja API Fetcher (Securely using st.secrets)
-def fetch_open_web_ninja_leads(city, state):
-    # Pull key securely from Streamlit Cloud Secrets (Never hardcoded)
-    api_key = st.secrets.get("OPEN_NINJA_KEY", "")
+# 2. Define unique endpoints and map them to their separate secret keys
+# (Manually paste your unique web addresses/URLs into the 'url' fields below)
+OPENWEB_NINJA_ENDPOINTS = {
+    "OpenWebNinja: Real Estate Data": {
+        "url":     'https://api.openwebninja.com/real-time-redfin-data/search', 
+        "secret_key": "OPEN_NINJA_REALESTATE_KEY",
+        "source_tag": "openwebninja_realestate"
+    },
+    "OpenWebNinja: Redfin Data": {
+        "url": 'https://api.openwebninja.com/real-time-redfin-data/search',
+        "secret_key": "OPEN_NINJA_REDFIN_KEY",
+        "source_tag": "openwebninja_redfin"
+    }
+}
+
+def fetch_open_web_ninja_leads(api_choice, city, state):
+    config = OPENWEB_NINJA_ENDPOINTS.get(api_choice)
+    if not config:
+        return None, "Invalid API configuration chosen."
+
+    # Pull the specific unique key for this API from Streamlit secrets
+    api_key = st.secrets.get(config["secret_key"], "")
     
     if not api_key:
-        return None, "Missing OPEN_NINJA_KEY in Streamlit app secrets."
+        return None, f"Missing `{config['secret_key']}` in Streamlit app secrets."
 
-    # Correct OpenWebNinja endpoint structure
-    url = "https://api.openwebninja.com/usage?api_id=<api_id>"# Adjust path if your specific dashboard slug differs
+    url = config["url"]
     headers = {"x-api-key": api_key}
     params = {"city": city, "state": state}
 
@@ -25,11 +42,9 @@ def fetch_open_web_ninja_leads(city, state):
         
         if response.status_code == 200:
             raw_json = response.json()
-            
-            # Save raw payload to local storage before processing
             filepath = save_raw_response(
                 data=raw_json, 
-                source="open_web_ninja", 
+                source=config["source_tag"], 
                 location=f"{city}_{state}"
             )
             return raw_json, f"Raw data safely archived to {filepath}"
@@ -42,7 +57,7 @@ def fetch_open_web_ninja_leads(city, state):
 # 3. UI and System Configuration
 st.set_page_config(page_title="Lead Engine V2", layout="wide")
 st.title("Autonomous Real-Estate Lead Engine — V2")
-st.markdown("Engine 1: OpenWebNinja | Engine 2: RapidAPI (Cooldown) | Engine 3: Local SQLite")
+st.markdown("Engine 1: OpenWebNinja (Multi-Key Setup) | Engine 2: RapidAPI | Engine 3: Local SQLite")
 
 st.sidebar.header("System Settings")
 
@@ -53,7 +68,7 @@ run_mode = st.sidebar.radio(
 
 api_source = st.sidebar.selectbox(
     "Live API Source:",
-    ["OpenWebNinja (Primary)", "RapidAPI (Secondary - Cooldown)"]
+    list(OPENWEB_NINJA_ENDPOINTS.keys()) + ["RapidAPI (Secondary - Cooldown)"]
 )
 
 if run_mode == "TEST (Local Offline Data)":
@@ -82,12 +97,12 @@ if st.button("Fetch & Verify Leads"):
             
     elif run_mode == "LIVE (External APIs)":
         
-        if api_source == "RapidAPI (Secondary - Cooldown)":
-            st.error("RapidAPI quota maxed. Cooldown active until September 23rd. Switch Engine to OpenWebNinja.")
+        if "RapidAPI" in api_source:
+            st.error("RapidAPI quota maxed. Cooldown active until September 23rd. Switch to an OpenWebNinja source.")
             
-        elif api_source == "OpenWebNinja (Primary)":
-            with st.spinner(f"Querying OpenWebNinja for {target_city}, {target_state}..."):
-                raw_data, status_msg = fetch_open_web_ninja_leads(target_city, target_state)
+        else:
+            with st.spinner(f"Querying {api_source} for {target_city}, {target_state}..."):
+                raw_data, status_msg = fetch_open_web_ninja_leads(api_source, target_city, target_state)
                 
                 if raw_data:
                     st.success(f"Success! {status_msg}")
