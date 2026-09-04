@@ -1,5 +1,6 @@
 import streamlit as st
 import json
+import pandas as pd
 import requests
 from database import initialize_database
 from storage import load_fixture, save_raw_response
@@ -32,11 +33,7 @@ def fetch_open_web_ninja_leads(api_choice, city, state):
         return None, f"Missing `{config['secret_key']}` in Streamlit app secrets."
 
     url = config["url"]
-    
-    # Must use capital X-API-Key as shown in the OpenWebNinja documentation
     headers = {"X-API-Key": api_key}
-    
-    # OpenWebNinja requires a combined 'location' parameter
     params = {"location": f"{city}, {state}"}
 
     try:
@@ -55,6 +52,54 @@ def fetch_open_web_ninja_leads(api_choice, city, state):
             
     except Exception as e:
         return None, f"Connection failed: {str(e)}"
+
+def render_leads_ui(raw_data):
+    """Parses raw JSON and displays clean tables and structural blocks instead of code."""
+    st.success("Data successfully loaded and formatted.")
+    
+    # Attempt to extract property listings from common keys in real estate payloads
+    listings = []
+    if isinstance(raw_data, dict):
+        # Look through common keys where APIs store results
+        for key in ["results", "properties", "listings", "data", "content"]:
+            if key in raw_data and isinstance(raw_data[key], list):
+                listings = raw_data[key]
+                break
+        # If no standard key matches, check if the dict itself can be items
+        if not listings and "result" in raw_data:
+            listings = [raw_data["result"]]
+
+    if listings:
+        st.subheader(f"Found {len(listings)} Property Listings")
+        
+        # Convert to DataFrame for clean tabular layout
+        df = pd.DataFrame(listings)
+        
+        # Select key columns if they exist to make the table hyper-clean
+        preferred_cols = ["address", "price", "bedrooms", "bathrooms", "property_type", "listing_status"]
+        available_cols = [col for col in preferred_cols if col in df.columns]
+        
+        if available_cols:
+            st.dataframe(df[available_cols], use_container_width=True)
+        else:
+            st.dataframe(df, use_container_width=True)
+            
+        # Display individual property blocks
+        st.markdown("---")
+        st.subheader("Detailed Property Blocks")
+        for idx, item in enumerate(listings[:10]):  # Show top 10 as structured blocks
+            with st.container():
+                cols = st.columns([3, 1])
+                with cols[0]:
+                    st.markdown(f"**Property #{idx+1}: {item.get('address', 'Address Unavailable')}**")
+                    st.write(f"Price: {item.get('price', 'N/A')} | Type: {item.get('property_type', 'N/A')}")
+                with cols[1]:
+                    st.metric("Beds / Baths", f"{item.get('bedrooms', '-')} / {item.get('bathrooms', '-')}")
+                st.markdown("---")
+    else:
+        # Fallback if structure is unique
+        st.warning("Rendered raw dictionary structure:")
+        st.json(raw_data)
 
 # 3. UI and System Configuration
 st.set_page_config(page_title="Lead Engine V2", layout="wide")
@@ -82,20 +127,20 @@ else:
 st.subheader("Target Market")
 col1, col2 = st.columns(2)
 with col1:
-    target_city = st.text_input("City", value="Los Angeles")
+    target_city = st.text_input("City", value="Austin")
 with col2:
-    target_state = st.text_input("State (Abbreviation)", value="CA", max_chars=2)
+    target_state = st.text_input("State (Abbreviation)", value="TX", max_chars=2)
 
 # 5. Strict Execution Lock
 if st.button("Fetch & Verify Leads"):
     
     if run_mode == "TEST (Local Offline Data)":
         try:
+            # Look for fixture files in order of availability
             raw_data = load_fixture("mock_open_ninja_leads.json")
-            st.success("Loaded offline fixture data successfully.")
-            st.json(raw_data)
+            render_leads_ui(raw_data)
         except FileNotFoundError:
-            st.error("Mock data file not found yet. Run a single LIVE query first to generate a raw JSON save file.")
+            st.error("Mock data file not found (`mock_open_ninja_leads.json`). Save a successful raw JSON response into your `/data/fixtures/` folder to enable offline test mode.")
             
     elif run_mode == "LIVE (External APIs)":
         
@@ -107,7 +152,7 @@ if st.button("Fetch & Verify Leads"):
                 raw_data, status_msg = fetch_open_web_ninja_leads(api_source, target_city, target_state)
                 
                 if raw_data:
-                    st.success(f"Success! {status_msg}")
-                    st.json(raw_data)
+                    st.success(status_msg)
+                    render_leads_ui(raw_data)
                 else:
                     st.error(status_msg)
