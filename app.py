@@ -4,6 +4,50 @@ import requests
 import re
 import urllib.parse
 from bs4 import BeautifulSoup
+import streamlit as st
+import json
+from database import initialize_database
+from storage import load_fixture, save_raw_response
+
+# 1. Initialize the SQLite database immediately on boot
+initialize_database()
+
+st.title("Real Estate Lead Engine — V2")
+
+# 2. Establish the Mode Toggle in the Sidebar
+st.sidebar.header("System Settings")
+run_mode = st.sidebar.radio(
+    "Data Source Mode:", 
+    ["TEST (Local Offline Data)", "LIVE (RapidAPI)"]
+)
+
+if run_mode == "TEST (Local Offline Data)":
+    st.sidebar.success("🟢 Offline Mode Active: Zero API calls will be made.")
+else:
+    st.sidebar.warning("🔴 Live Mode Active: Searches will consume API quota.")
+
+# 3. Search Interface
+st.subheader("Target Market")
+col1, col2 = st.columns(2)
+with col1:
+    target_city = st.text_input("City", value="Los Angeles")
+with col2:
+    target_state = st.text_input("State (Abbreviation)", value="CA", max_chars=2)
+
+if st.button("Search Leads"):
+    if run_mode == "TEST (Local Offline Data)":
+        # Load data from the local JSON fixture instead of the API
+        try:
+            # We will create this mock file next
+            raw_data = load_fixture("mock_los_angeles.json")
+            st.success("Loaded offline fixture data successfully.")
+            st.json(raw_data) # Display raw data for now to verify
+        except FileNotFoundError:
+            st.error("Mock data file not found. We need to save a fixture first.")
+            
+    elif run_mode == "LIVE (RapidAPI)":
+        st.info("Live API execution will go here.")
+        # Your previous API fetching logic will eventually be plugged in here
 
 # ==========================================
 # PAGE CONFIGURATION
