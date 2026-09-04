@@ -1,32 +1,66 @@
 import streamlit as st
-import pandas as pd
-import requests
-import re
-import urllib.parse
-from bs4 import BeautifulSoup
-import streamlit as st
 import json
+import requests
 from database import initialize_database
 from storage import load_fixture, save_raw_response
 
 # 1. Initialize the SQLite database immediately on boot
 initialize_database()
 
-st.title("Real Estate Lead Engine — V2")
+# 2. Open Ninja API Fetcher (with Priority 2 Raw Archiving)
+def fetch_open_ninja_leads(city, state):
+    # Pull key securely from Streamlit Cloud Secrets
+    OPEN_NINJA_KEY = st.secrets.get("OPEN_NINJA_KEY", "")
+    
+    if not OPEN_NINJA_KEY:
+        return None, "Missing OPEN_NINJA_KEY in Streamlit app secrets."
 
-# 2. Establish the Mode Toggle in the Sidebar
+    url = "https://api.api-ninjas.com/v1/realestate"
+    headers = {"X-Api-Key": OPEN_NINJA_KEY}
+    params = {"city": city, "state": state}
+
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=12)
+        
+        if response.status_code == 200:
+            raw_json = response.json()
+            
+            # Immediately save raw payload to local storage before any processing
+            filepath = save_raw_response(
+                data=raw_json, 
+                source="open_ninja", 
+                location=f"{city}_{state}"
+            )
+            return raw_json, f"Raw data safely archived to {filepath}"
+        else:
+            return None, f"API Error {response.status_code}: {response.text}"
+            
+    except Exception as e:
+        return None, f"Connection failed: {str(e)}"
+
+# 3. UI and System Configuration
+st.set_page_config(page_title="Lead Engine V2", layout="wide")
+st.title("Autonomous Real-Estate Lead Engine — V2")
+st.markdown("Engine 1: Open Ninja | Engine 2: RapidAPI (Cooldown) | Engine 3: Local SQLite")
+
 st.sidebar.header("System Settings")
+
 run_mode = st.sidebar.radio(
-    "Data Source Mode:", 
-    ["TEST (Local Offline Data)", "LIVE (RapidAPI)"]
+    "Execution Mode:", 
+    ["TEST (Local Offline Data)", "LIVE (External APIs)"]
+)
+
+api_source = st.sidebar.selectbox(
+    "Live API Source:",
+    ["Open Ninja (Primary)", "RapidAPI (Secondary - Cooldown)"]
 )
 
 if run_mode == "TEST (Local Offline Data)":
     st.sidebar.success("🟢 Offline Mode Active: Zero API calls will be made.")
 else:
-    st.sidebar.warning("🔴 Live Mode Active: Searches will consume API quota.")
+    st.sidebar.warning(f"🔴 Live Mode Active: Will route through {api_source}.")
 
-# 3. Search Interface
+# 4. Target Market Parameters
 st.subheader("Target Market")
 col1, col2 = st.columns(2)
 with col1:
@@ -34,233 +68,28 @@ with col1:
 with col2:
     target_state = st.text_input("State (Abbreviation)", value="CA", max_chars=2)
 
-if st.button("Search Leads"):
+# 5. Strict Execution Lock (Prevents auto-execution on page reload)
+if st.button("Fetch & Verify Leads"):
+    
     if run_mode == "TEST (Local Offline Data)":
-        # Load data from the local JSON fixture instead of the API
         try:
-            # We will create this mock file next
-            raw_data = load_fixture("mock_los_angeles.json")
+            raw_data = load_fixture("mock_open_ninja_leads.json")
             st.success("Loaded offline fixture data successfully.")
-            st.json(raw_data) # Display raw data for now to verify
+            st.json(raw_data)
         except FileNotFoundError:
-            st.error("Mock data file not found. We need to save a fixture first.")
+            st.error("Mock data file not found yet. Run a single LIVE query first to generate a raw JSON save file.")
             
-    elif run_mode == "LIVE (RapidAPI)":
-        st.info("Live API execution will go here.")
-        # Your previous API fetching logic will eventually be plugged in here
-
-# ==========================================
-# PAGE CONFIGURATION
-# ==========================================
-st.set_page_config(
-    page_title="Autonomous B2B Lead Engine",
-    page_icon="🏢",
-    layout="wide"
-)
-
-st.title("🏢 Autonomous Real-Estate Lead Engine")
-st.caption("Engine 1: RapidAPI MLS Ingestion | Engine 2: Yahoo Search Fallback | Enterprise Verification Matrix")
-
-# ==========================================
-# SECRETS MANAGEMENT (BACKEND ONLY)
-# ==========================================
-try:
-    RAPIDAPI_KEY = st.secrets["RAPIDAPI_KEY"]
-except KeyError:
-    st.error("⚠️ Critical Error: RAPIDAPI_KEY is missing in Streamlit secrets.")
-    st.stop()
-
-# ==========================================
-# SIDEBAR CONTROLS
-# ==========================================
-with st.sidebar:
-    st.header("📍 Target Search Parameters")
-    city_input = st.text_input("Target City", value="Miami")
-    state_input = st.text_input("Target State (2-Letter)", value="FL", max_chars=2)
-    max_leads = st.slider("Maximum Leads to Fetch", min_value=10, max_value=100, value=25)
-    
-    st.markdown("---")
-    execute_search = st.button("🚀 Fetch & Verify Leads", use_container_width=True)
-
-# ==========================================
-# ENGINE 1: RAPIDAPI INGESTION
-# ==========================================
-def fetch_rapidapi_leads(city, state, api_key, limit=25):
-    url = "https://us-real-estate-listings.p.rapidapi.com/v2/for-sale"
-    querystring = {
-        "city": city,
-        "state_code": state,
-        "offset": "0",
-        "limit": str(limit),
-        "sort": "newest"
-    }
-    headers = {
-        "x-rapidapi-key": api_key,
-        "x-rapidapi-host": "us-real-estate-listings.p.rapidapi.com"
-    }
-    
-    try:
-        response = requests.get(url, headers=headers, params=querystring, timeout=12)
-        if response.status_code == 429 or response.status_code == 403:
-            return None, "QUOTA_EXCEEDED"
-        elif response.status_code != 200:
-            return None, f"API_ERROR_{response.status_code}"
+    elif run_mode == "LIVE (External APIs)":
+        
+        if api_source == "RapidAPI (Secondary - Cooldown)":
+            st.error("RapidAPI quota maxed. Cooldown active until September 23rd. Switch Engine to Open Ninja.")
             
-        data = response.json()
-        results = data.get('data', {}).get('results', [])
-        
-        leads = []
-        for item in results:
-            location = item.get('location', {}).get('address', {})
-            price = item.get('list_price', 0)
-            status = item.get('status', 'Active')
-            prop_type = item.get('description', {}).get('type', 'Single Family Home')
-            brokerage = item.get('advertiser', {}).get('office', {}).get('name', 'N/A')
-            listing_id = item.get('property_id', '')
-            listing_url = f"https://www.realtor.com/realestateandhomes-detail/{listing_id}" if listing_id else ""
-            
-            leads.append({
-                'Address': location.get('line', ''),
-                'City': location.get('city', city),
-                'State': location.get('state_code', state),
-                'Zip': location.get('postal_code', ''),
-                'Price': price,
-                'Property Type': prop_type,
-                'Status': status,
-                'Brokerage / Agent': brokerage,
-                'Listing URL': listing_url,
-                'isPending': item.get('flags', {}).get('is_pending', False),
-                'isContingent': item.get('flags', {}).get('is_contingent', False),
-                'Source': 'RapidAPI Engine 1'
-            })
-        return leads, None
-    except Exception as e:
-        return None, str(e)
-#==========================================
-# ENTERPRISE LEAD VERIFICATION ENGINE
-# ==========================================
-def verify_and_clean_leads(raw_leads):
-    if not raw_leads:
-        return pd.DataFrame(), 0
-
-    df = pd.DataFrame(raw_leads)
-    initial_count = len(df)
-    valid_rows = []
-
-    OFF_MARKET_KEYWORDS = [
-        'PENDING', 'SOLD', 'UNDER CONTRACT', 'CONTINGENT', 'OFF MARKET', 'OFF_MARKET',
-        'CLOSED', 'AUCTION', 'COMING SOON', 'TEMP OFF MARKET', 'INACTIVE', 'EXPIRED',
-        'WITHDRAWN', 'NOTICE OF DEFAULT', 'FORECLOSURE'
-    ]
-    
-    INVALID_PROPERTY_TYPES = [
-        'LAND', 'LOT', 'MANUFACTURED', 'MOBILE', 'PARKING', 'STORAGE', 'CEMETERY',
-        'BOAT SLIP', 'DOCK', 'TIMESHARE', 'VACANT LAND'
-    ]
-
-    for idx, row in df.iterrows():
-        status_str = str(row.get('Status', '')).upper()
-        prop_type_str = str(row.get('Property Type', '')).upper()
-        addr_str = str(row.get('Address', '')).strip()
-        
-        try:
-            price_val = float(row.get('Price', 0)) if pd.notnull(row.get('Price')) else 0
-        except ValueError:
-            price_val = 0
-
-        # Strict Rules
-        if not re.match(r'^\d+\s+[A-Za-z0-9]', addr_str): continue
-        if any(keyword in status_str for keyword in OFF_MARKET_KEYWORDS): continue
-        if any(p_type in prop_type_str for p_type in INVALID_PROPERTY_TYPES): continue
-        if price_val < 10000: continue
-        if row.get('isPending') is True or row.get('isContingent') is True: continue
-
-        query_str = f"{addr_str} {row['City']} {row['State']}".strip()
-        lookup_encoded = urllib.parse.quote(query_str)
-        
-        valid_entry = {
-            'Verification': '✅ VERIFIED ACTIVE',
-            'Address': addr_str,
-            'City': row['City'],
-            'State': row['State'],
-            'Zip': row['Zip'],
-            'Price ($)': f"${price_val:,.0f}",
-            'Property Type': row['Property Type'],
-            'Status': row['Status'],
-            'Brokerage / Agent': row['Brokerage / Agent'],
-            'Listing URL': row['Listing URL'],
-            'Contact Lookup': f"https://www.truepeoplesearch.com/results?name={lookup_encoded}",
-            'Source Engine': row['Source']
-        }
-        valid_rows.append(valid_entry)
-
-    verified_df = pd.DataFrame(valid_rows)
-    off_market_count = initial_count - len(verified_df)
-    return verified_df, off_market_count
-
-# ==========================================
-# MAIN APPLICATION EXECUTION
-# ==========================================
-if execute_search:
-    with st.spinner("Executing Lead Extraction & Verification Pipeline..."):
-        leads = []
-        engine_used = ""
-        diagnostics = []
-        
-        # Primary API Call
-        raw_leads, error = fetch_rapidapi_leads(city_input, state_input, RAPIDAPI_KEY, max_leads)
-        
-        # Engine Failover Logic
-        if error == "QUOTA_EXCEEDED" or (raw_leads is not None and len(raw_leads) == 0):
-            st.warning("⚠️ RapidAPI quota exhausted. Failing over to Web Scraper Engine 2...")
-            leads, diagnostics = scrape_web_leads_fallback(city_input, state_input, max_leads)
-            engine_used = "Web Scraper Engine 2 (Yahoo)"
-        elif raw_leads:
-            leads = raw_leads
-            engine_used = "RapidAPI Real Estate Engine 1"
-        else:
-            st.error(f"⚠️ Primary API Error: {error}. Failing over to Engine 2...")
-            leads, diagnostics = scrape_web_leads_fallback(city_input, state_input, max_leads)
-            engine_used = "Web Scraper Engine 2 (Yahoo)"
-
-        # Verification Pipeline
-        verified_df, filtered_off_market = verify_and_clean_leads(leads)
-
-    # Output Metrics
-    st.subheader("📊 Pipeline Diagnostics")
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Extracted", len(leads))
-    col2.metric("Verified Active", len(verified_df))
-    col3.metric("Filtered Off-Market", filtered_off_market)
-    col4.metric("Active Engine", engine_used)
-
-    # Display Engine 2 Diagnostics if it failed
-    if "Engine 2" in engine_used and len(leads) == 0:
-        with st.expander("🛠️ Scraper Diagnostic Logs (Why it returned 0)"):
-            st.error("Engine 2 experienced an issue. See logs below:")
-            for log in diagnostics:
-                st.code(log)
-
-    # Render Data Table
-    if not verified_df.empty:
-        st.subheader("📋 Verified Active Leads")
-        st.dataframe(
-            verified_df,
-            column_config={
-                "Listing URL": st.column_config.LinkColumn("Listing Link", display_text="View Listing"),
-                "Contact Lookup": st.column_config.LinkColumn("Owner Contact", display_text="Find Owner Details")
-            },
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        # CSV Export
-        csv_data = verified_df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Download Verified Leads (CSV)",
-            data=csv_data,
-            file_name=f"verified_leads_{city_input}_{state_input}.csv",
-            mime="text/csv"
-        )
-    else:
-        st.error("No active, verified leads were found. Check the diagnostic logs above if Engine 2 fired blanks.")
+        elif api_source == "Open Ninja (Primary)":
+            with st.spinner(f"Querying Open Ninja for {target_city}, {target_state}..."):
+                raw_data, status_msg = fetch_open_ninja_leads(target_city, target_state)
+                
+                if raw_data:
+                    st.success(f"Success! {status_msg}")
+                    st.json(raw_data)
+                else:
+                    st.error(status_msg)
