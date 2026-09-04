@@ -7,16 +7,17 @@ from storage import load_fixture, save_raw_response
 # 1. Initialize the SQLite database immediately on boot
 initialize_database()
 
-# 2. Open Ninja API Fetcher (with Priority 2 Raw Archiving)
-def fetch_open_ninja_leads(city, state):
-    # Pull key securely from Streamlit Cloud Secrets
-    OPEN_NINJA_KEY = st.secrets.get("OPEN_NINJA_KEY", "")
+# 2. OpenWebNinja API Fetcher (Securely using st.secrets)
+def fetch_open_web_ninja_leads(city, state):
+    # Pull key securely from Streamlit Cloud Secrets (Never hardcoded)
+    api_key = st.secrets.get("OPEN_NINJA_KEY", "")
     
-    if not OPEN_NINJA_KEY:
+    if not api_key:
         return None, "Missing OPEN_NINJA_KEY in Streamlit app secrets."
 
-    url = "https://api.api-ninjas.com/v1/realestate"
-    headers = {"X-Api-Key": OPEN_NINJA_KEY}
+    # Correct OpenWebNinja endpoint structure
+    url = "https://api.openwebninja.com/v1/realestate" # Adjust path if your specific dashboard slug differs
+    headers = {"x-api-key": api_key}
     params = {"city": city, "state": state}
 
     try:
@@ -25,10 +26,10 @@ def fetch_open_ninja_leads(city, state):
         if response.status_code == 200:
             raw_json = response.json()
             
-            # Immediately save raw payload to local storage before any processing
+            # Save raw payload to local storage before processing
             filepath = save_raw_response(
                 data=raw_json, 
-                source="open_ninja", 
+                source="open_web_ninja", 
                 location=f"{city}_{state}"
             )
             return raw_json, f"Raw data safely archived to {filepath}"
@@ -41,7 +42,7 @@ def fetch_open_ninja_leads(city, state):
 # 3. UI and System Configuration
 st.set_page_config(page_title="Lead Engine V2", layout="wide")
 st.title("Autonomous Real-Estate Lead Engine — V2")
-st.markdown("Engine 1: Open Ninja | Engine 2: RapidAPI (Cooldown) | Engine 3: Local SQLite")
+st.markdown("Engine 1: OpenWebNinja | Engine 2: RapidAPI (Cooldown) | Engine 3: Local SQLite")
 
 st.sidebar.header("System Settings")
 
@@ -52,7 +53,7 @@ run_mode = st.sidebar.radio(
 
 api_source = st.sidebar.selectbox(
     "Live API Source:",
-    ["Open Ninja (Primary)", "RapidAPI (Secondary - Cooldown)"]
+    ["OpenWebNinja (Primary)", "RapidAPI (Secondary - Cooldown)"]
 )
 
 if run_mode == "TEST (Local Offline Data)":
@@ -68,7 +69,7 @@ with col1:
 with col2:
     target_state = st.text_input("State (Abbreviation)", value="CA", max_chars=2)
 
-# 5. Strict Execution Lock (Prevents auto-execution on page reload)
+# 5. Strict Execution Lock
 if st.button("Fetch & Verify Leads"):
     
     if run_mode == "TEST (Local Offline Data)":
@@ -82,11 +83,11 @@ if st.button("Fetch & Verify Leads"):
     elif run_mode == "LIVE (External APIs)":
         
         if api_source == "RapidAPI (Secondary - Cooldown)":
-            st.error("RapidAPI quota maxed. Cooldown active until September 23rd. Switch Engine to Open Ninja.")
+            st.error("RapidAPI quota maxed. Cooldown active until September 23rd. Switch Engine to OpenWebNinja.")
             
-        elif api_source == "Open Ninja (Primary)":
-            with st.spinner(f"Querying Open Ninja for {target_city}, {target_state}..."):
-                raw_data, status_msg = fetch_open_ninja_leads(target_city, target_state)
+        elif api_source == "OpenWebNinja (Primary)":
+            with st.spinner(f"Querying OpenWebNinja for {target_city}, {target_state}..."):
+                raw_data, status_msg = fetch_open_web_ninja_leads(target_city, target_state)
                 
                 if raw_data:
                     st.success(f"Success! {status_msg}")
