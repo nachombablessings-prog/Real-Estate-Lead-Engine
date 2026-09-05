@@ -24,17 +24,6 @@ OPENWEB_NINJA_ENDPOINTS = {
     }
 }
 
-BUILTIN_MOCK_DATA = {
-    "results": [
-        {"address": "7728 Woodrow Wilson Dr, Los Angeles, CA 90046", "price": 14000000, "bedrooms": 5, "bathrooms": 6, "property_type": "SINGLE_FAMILY", "broker": "Serhant California, Inc"},
-        {"address": "1326 Beverly Estate Dr, Beverly Hills, CA 90210", "price": 10995000, "bedrooms": 4, "bathrooms": 5, "property_type": "SINGLE_FAMILY", "broker": "Exclusive Realty Inc"},
-        {"address": "8657 Morehart Ave, Sun Valley, CA 91352", "price": 8300000, "bedrooms": 3, "bathrooms": 3, "property_type": "SINGLE_FAMILY", "broker": "Century 21 A Better Service"},
-        {"address": "1350 Jonesboro Dr, Los Angeles, CA 90049", "price": 7495000, "bedrooms": 4, "bathrooms": 4, "property_type": "SINGLE_FAMILY", "broker": "Listing Broker/Agent"},
-        {"address": "336 Loring Ave, Los Angeles, CA 90024", "price": 6395000, "bedrooms": 3, "bathrooms": 4, "property_type": "SINGLE_FAMILY", "broker": "Berkshire Hathaway HomeServices"},
-        {"address": "166 N McCadden Pl, Los Angeles, CA 90004", "price": 5399000, "bedrooms": 4, "bathrooms": 4, "property_type": "SINGLE_FAMILY", "broker": "The Bienstock Group"}
-    ]
-}
-
 def fetch_open_web_ninja_leads(api_choice, city, state):
     config = OPENWEB_NINJA_ENDPOINTS.get(api_choice)
     if not config:
