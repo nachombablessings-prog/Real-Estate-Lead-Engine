@@ -96,12 +96,6 @@ else:
                 st.error(msg)
                 raw_data = BUILTIN_MOCK_DATA
 
-if not raw_data:
-    raw_data = BUILTIN_MOCK_DATA
-
-listings = extract_listings(raw_data)
-df = pd.DataFrame(listings)
-
 # Calculate Metric Values
 total_leads = len(listings)
 pipeline_value = sum([float(item.get('price', 0)) for item in listings if isinstance(item.get('price'), (int, float, str)) and str(item.get('price', 0)).replace('.','',1).isdigit()])
