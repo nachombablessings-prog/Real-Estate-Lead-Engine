@@ -19,7 +19,7 @@ OPENWEB_NINJA_ENDPOINTS = {
     "OpenWebNinja: Redfin Data": {
         "url": "https://api.openwebninja.com/realtime-redfin-data/search", 
         "secret_key": "OPEN_NINJA_REDFIN_KEY",
-        "fallback_key": "OPEN_NINJA_REALESTATE_KEY",
+        "fallback_key": "OPEN_NINJA_REDFIN_KEY",
         "source_tag": "openwebninja_redfin"
     }
 }
