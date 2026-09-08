@@ -17,15 +17,8 @@ OPENWEB_NINJA_ENDPOINTS = {
     }
 }
 
-BUILTIN_MOCK_DATA = {
-    "results": [
-        {"address": "7728 Woodrow Wilson Dr, Los Angeles", "price": 14000000, "bedrooms": 5, "bathrooms": 6, "property_type": "SINGLE_FAMILY", "broker": "Serhant California, Inc"},
-        {"address": "1326 Beverly Estate Dr, Beverly Hills", "price": 10995000, "bedrooms": 4, "bathrooms": 5, "property_type": "SINGLE_FAMILY", "broker": "Exclusive Realty Inc"}
-    ]
-}
-
 def fetch_leads(api_choice, city, state):
-    """Routes the request, handles 403 fallbacks, and archives the response."""
+    """Routes live network requests, handles secret key fallbacks, and archives raw JSON."""
     config = OPENWEB_NINJA_ENDPOINTS.get(api_choice)
     if not config:
         return None, "Invalid API configuration."
@@ -50,7 +43,7 @@ def fetch_leads(api_choice, city, state):
         return None, f"Connection failed: {str(e)}"
 
 def extract_listings(raw_data):
-    """Standardizes disparate API JSON structures into a flat list of dictionaries."""
+    """Parses real API JSON payloads into a uniform list of property dictionaries."""
     if not isinstance(raw_data, dict):
         return []
     for key in ["results", "properties", "listings", "data", "content"]:
@@ -58,4 +51,4 @@ def extract_listings(raw_data):
             return raw_data[key]
     if "result" in raw_data:
         return [raw_data["result"]]
-    return BUILTIN_MOCK_DATA["results"]
+    return []
