@@ -1,53 +1,49 @@
 import sqlite3
 import os
-from pathlib import Path
 
-DB_PATH = Path("data/leads.db")
-
-def get_db_connection():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+DB_PATH = "data/leads_master.db"
 
 def initialize_database():
-    conn = get_db_connection()
+    """Creates the SQLite database and leads table if they do not exist."""
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    # Lead storage schema
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS leads (
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS verified_leads (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            address TEXT NOT NULL,
-            city TEXT NOT NULL,
-            state TEXT NOT NULL,
-            zip TEXT,
+            address TEXT,
             price REAL,
+            bedrooms INTEGER,
+            bathrooms INTEGER,
             property_type TEXT,
-            status TEXT DEFAULT 'DISCOVERED',
-            agent_name TEXT,
-            broker_name TEXT,
-            listing_url TEXT UNIQUE,
-            source TEXT,
-            verification_score INTEGER DEFAULT 0,
-            verification_reason TEXT,
-            first_seen TEXT,
-            last_checked TEXT
+            broker TEXT,
+            source_api TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
-    """)
-    
-    # Search cache table (Priority 4)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS search_cache (
-            search_key TEXT PRIMARY KEY,
-            params_json TEXT,
-            timestamp TEXT
-        )
-    """)
-    
+    ''')
     conn.commit()
     conn.close()
 
-if __name__ == "__main__":
-    initialize_database()
-    print("✅ Database initialized successfully at data/leads.db")
+def log_leads_to_db(listings, source="Unknown"):
+    """Inserts a batch of scraped listings into the local database."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    for item in listings:
+        cursor.execute('''
+            INSERT INTO verified_leads (address, price, bedrooms, bathrooms, property_type, broker, source_api)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            item.get("address", "N/A"),
+            item.get("price", 0.0),
+            item.get("bedrooms", 0),
+            item.get("bathrooms", 0),
+            item.get("property_type", "Unknown"),
+            item.get("broker", item.get("listing_agent", "Unknown")),
+            source
+        ))
+        
+    conn.commit()
+    conn.close()
