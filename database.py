@@ -80,6 +80,12 @@ CREATE TABLE IF NOT EXISTS search_results (
     PRIMARY KEY (search_key, rank)
 ) WITHOUT ROWID;
 
+CREATE TABLE IF NOT EXISTS raw_cache (
+    cache_key  TEXT PRIMARY KEY,
+    payload    TEXT NOT NULL,
+    fetched_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS api_usage (
     month TEXT PRIMARY KEY,
     calls INTEGER NOT NULL DEFAULT 0
@@ -139,8 +145,16 @@ def _tx():
 
 def init_db():
     conn = get_conn()
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(listings)")}
+    if cols and "last_seen" not in cols:  # table from an older version of this project
+        conn.execute("DROP INDEX IF EXISTS idx_listings_city_state")
+        conn.execute("DROP INDEX IF EXISTS idx_listings_zip")
+        conn.execute("ALTER TABLE listings RENAME TO listings_legacy")
     conn.executescript(_SCHEMA)
     return DB_PATH
+
+
+initialize_database = init_db  # name used by app.py
 
 
 # --------------------------------------------------------------------------
@@ -208,6 +222,21 @@ ON CONFLICT(zpid) DO UPDATE SET
 """
 
 
+def _upsert_rows(conn, rows, now):
+    """Upsert normalized rows and record price changes. Call inside a transaction."""
+    old = {}
+    ids = [r["zpid"] for r in rows]
+    for i in range(0, len(ids), 500):
+        chunk = ids[i:i + 500]
+        q = f"SELECT zpid, price FROM listings WHERE zpid IN ({','.join('?' * len(chunk))})"
+        old.update({r["zpid"]: r["price"] for r in conn.execute(q, chunk)})
+    hist = [(r["zpid"], r["price"], now) for r in rows
+            if r["price"] and old.get(r["zpid"]) != r["price"]]
+    conn.executemany(_UPSERT, rows)
+    if hist:
+        conn.executemany("INSERT OR IGNORE INTO price_history VALUES (?,?,?)", hist)
+
+
 def save_listings(city, state, page, raw_list):
     """Upsert a whole API page in ONE transaction. Returns rows saved."""
     now = int(time.time())
@@ -221,19 +250,7 @@ def save_listings(city, state, page, raw_list):
 
     key = search_key(city, state, page)
     with _tx() as conn:
-        # price history: only when the price actually changed (or is new)
-        old = {}
-        ids = [r["zpid"] for r in rows]
-        for i in range(0, len(ids), 500):
-            chunk = ids[i:i + 500]
-            q = f"SELECT zpid, price FROM listings WHERE zpid IN ({','.join('?' * len(chunk))})"
-            old.update({r["zpid"]: r["price"] for r in conn.execute(q, chunk)})
-        hist = [(r["zpid"], r["price"], now) for r in rows
-                if r["price"] and old.get(r["zpid"]) != r["price"]]
-
-        conn.executemany(_UPSERT, rows)
-        if hist:
-            conn.executemany("INSERT OR IGNORE INTO price_history VALUES (?,?,?)", hist)
+        _upsert_rows(conn, rows, now)
         conn.execute("DELETE FROM search_results WHERE search_key=?", (key,))
         conn.executemany("INSERT INTO search_results VALUES (?,?,?)",
                          [(key, i, r["zpid"]) for i, r in enumerate(rows)])
@@ -369,6 +386,86 @@ def get_or_fetch(city, state, fetch_fn, page=1, ttl_hours=DEFAULT_TTL_HOURS,
         _flush_stats()
         return _read_any(key), "api"
 
+
+
+# --------------------------------------------------------------------------
+# Drop-in functions for app.py
+# --------------------------------------------------------------------------
+def log_leads_to_db(listings, source="unknown"):
+    """Store already-extracted listings (list of dicts). Safe to call on every rerun."""
+    now = int(time.time())
+    rows, seen = [], set()
+    for raw in listings or []:
+        n = normalize(raw, "", "")
+        if n and n["zpid"] not in seen:
+            seen.add(n["zpid"])
+            n["now"] = now
+            rows.append(n)
+    if not rows:
+        return 0
+    with _tx() as conn:
+        _upsert_rows(conn, rows, now)
+    return len(rows)
+
+
+def cached_fetch(source, city, state, fetch_fn, ttl_hours=DEFAULT_TTL_HOURS,
+                 force_refresh=False, monthly_limit=MONTHLY_CALL_LIMIT):
+    """
+    Cache wrapper around api.fetch_leads.
+    fetch_fn(source, city, state) -> (raw_data, msg)   # your existing signature
+    Returns (raw_data, msg) so app.py barely changes.
+    """
+    key = f"{source}|{city.strip().lower()}|{state.strip().lower()}"
+
+    def _read(max_age_hours=None):
+        r = get_conn().execute(
+            "SELECT payload, fetched_at FROM raw_cache WHERE cache_key=?", (key,)).fetchone()
+        if r is None:
+            return None
+        age_h = (time.time() - r["fetched_at"]) / 3600
+        if max_age_hours is not None and age_h > max_age_hours:
+            return None
+        return json.loads(r["payload"]), age_h
+
+    if not force_refresh:
+        hit = _read(ttl_hours)
+        if hit:
+            _bump("hits"); _flush_stats()
+            return hit[0], f"Served from local cache (fetched {hit[1]:.1f}h ago). 0 API calls used."
+
+    with _lock_for(key):
+        if not force_refresh:
+            hit = _read(ttl_hours)
+            if hit:
+                _bump("hits"); _flush_stats()
+                return hit[0], f"Served from local cache (fetched {hit[1]:.1f}h ago). 0 API calls used."
+
+        _bump("misses")
+        stale = _read()
+        if calls_used_this_month() >= monthly_limit:
+            _flush_stats()
+            if stale:
+                return stale[0], "Monthly API limit reached. Showing older cached data."
+            return None, f"Monthly API limit ({monthly_limit}) reached and nothing cached yet."
+
+        _count_call()
+        try:
+            raw, msg = fetch_fn(source, city, state)
+        except Exception as e:  # network errors etc.
+            raw, msg = None, f"API error: {e}"
+        if raw:
+            with _tx() as conn:
+                conn.execute(
+                    "INSERT INTO raw_cache VALUES (?,?,?) ON CONFLICT(cache_key) DO UPDATE "
+                    "SET payload=excluded.payload, fetched_at=excluded.fetched_at",
+                    (key, json.dumps(raw), int(time.time())))
+            _flush_stats()
+            return raw, msg
+        _bump("stale_served") if stale else None
+        _flush_stats()
+        if stale:
+            return stale[0], f"{msg} Showing older cached data."
+        return None, msg
 
 # --------------------------------------------------------------------------
 # Deal signals (pure local SQL, $0)
