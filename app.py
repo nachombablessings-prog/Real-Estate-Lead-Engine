@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from database import initialize_database, log_leads_to_db
+from database import initialize_database, log_leads_to_db, cached_fetch, cache_report
 from api import fetch_leads, extract_listings, OPENWEB_NINJA_ENDPOINTS
 from storage import load_fixture
 from ui import render_metrics_banner, render_property_blocks
@@ -19,6 +19,11 @@ st.sidebar.markdown("---")
 st.sidebar.header("System Settings")
 run_mode = st.sidebar.radio("Execution Mode:", ["LIVE (External APIs)", "TEST (Local Offline Data)"])
 api_source = st.sidebar.selectbox("Live API Source:", list(OPENWEB_NINJA_ENDPOINTS.keys()))
+force_refresh = st.sidebar.checkbox("Force refresh (uses an API credit)", value=False)
+
+# Cache performance: shows how many API calls the cache has saved you
+with st.sidebar.expander("Cache & quota report"):
+    st.json(cache_report())
 
 # 3. Main Header
 st.title("Autonomous Real-Estate Lead Engine")
@@ -36,8 +41,12 @@ if run_mode == "TEST (Local Offline Data)":
         st.error("No local fixture found. Save a real JSON payload to `data/fixtures/mock_open_ninja_leads.json` to enable offline testing.")
 else:
     if st.button("Fetch & Enrich Leads"):
-        with st.spinner(f"Querying API for {target_city}, {target_state}..."):
-            raw_data, msg = fetch_leads(api_source, target_city, target_state)
+        with st.spinner(f"Checking cache / querying API for {target_city}, {target_state}..."):
+            # Read-first: only calls fetch_leads when the cache is missing or older than 48h
+            raw_data, msg = cached_fetch(
+                api_source, target_city, target_state, fetch_leads,
+                force_refresh=force_refresh,
+            )
             if raw_data:
                 st.success(msg)
             else:
@@ -46,7 +55,7 @@ else:
 # 5. UI Rendering
 if raw_data:
     listings = extract_listings(raw_data)
-    
+
     if listings:
         df = pd.DataFrame(listings)
         log_leads_to_db(listings, api_source if run_mode == "LIVE (External APIs)" else "Local Test File")
